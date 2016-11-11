@@ -3,10 +3,10 @@ Collection of ESP8266 Home Automation Sketches
 This is my first attmept at home automation with ESP8266 devices
 Integrated with Home Assistant and HAP-NodeJS for HomeKit
 
-Plan to add Sonos devices for lights/plugs
+Plan to add Itead Sonoff devices for lights/plugs
 Plan to add RGB Led for custom lights
 Plan intergration with Amazon Echo
 
 tempNodeOut - Code for ESP-01 with 3ea 1-Wire temperature sensors sent to local MQTT server
 tempNodeSTR - Code for ESP-01 with 3ea 1-Wire temperature sensors sent to local MQTT server
-
+sonoff-MQTT - modified fork of https://github.com/mertenats/Sonoff project controls Sonoff devices

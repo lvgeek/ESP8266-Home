@@ -1,2 +1,5 @@
 Collection of ESP8266 Home Automation Sketches
 
+tempNodeOut - Code for ESP-01 with 3ea 1-Wire temperature sensors sent to local MQTT server
+tempNodeSTR - Code for ESP-01 with 3ea 1-Wire temperature sensors sent to local MQTT server
+

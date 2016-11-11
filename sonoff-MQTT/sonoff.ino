@@ -1,12 +1,12 @@
 /* 
+  Lvgeek modified sonoff-MQTT for local MQTT and HA
+
   Alternative firmware for Itead Sonoff switches, based on the MQTT protocol and a TLS connection
   The very initial version of this firmware was a fork from the SonoffBoilerplate (tzapu)
   
   This firmware can be easily interfaced with Home Assistant, with the MQTT switch 
   component: https://home-assistant.io/components/switch.mqtt/
-
-  CloudMQTT (free until 10 connections): https://www.cloudmqtt.com
-  
+ 
   Libraries :
     - ESP8266 core for Arduino :  https://github.com/esp8266/Arduino
     - PubSubClient:               https://github.com/knolleary/pubsubclient
@@ -16,7 +16,6 @@
     - File > Examples > ES8266WiFi > WiFiClient
     - File > Examples > PubSubClient > mqtt_auth
     - https://github.com/tzapu/SonoffBoilerplate
-    - https://io.adafruit.com/blog/security/2016/07/05/adafruit-io-security-esp8266/
 
   Schematic:
     - VCC (Sonoff) -> VCC (FTDI)
@@ -39,18 +38,16 @@
     switch:
       platform: mqtt
       name: 'Switch'
-      state_topic: 'CBF777/switch/state'
-      command_topic: 'CBF777/switch/switch'
+      state_topic: 'CBFxxx/switch/state'
+      command_topic: 'CBFxxx/switch/switch'
       optimistic: false
 
-  Versions:
-    - 1.0: Initial version
-    - 1.1: Add TLS support
-    - 1.2: Add PIR sensor support
-
-  Samuel M. - v1.2 - 11.2016
+  Modified version of Samuel M. - v1.2 - 11.2016
   If you like this example, please add a star! Thank you!
   https://github.com/mertenats/sonoff
+  
+  Lvgeek 2016
+  https://github.com/lvgeek/ESP8266-Home/sonoff-MQTT
 */
 
 #include <ESP8266WiFi.h>    // https://github.com/esp8266/Arduino
@@ -60,19 +57,8 @@
 #include <EEPROM.h>
 //#include <ArduinoOTA.h>
 
-// TLS support, make sure to edit the fingerprint and the broker address if
-// you are not using CloudMQTT
-#define           TLS
-#ifdef TLS
-const char*       broker      = "m21.cloudmqtt.com"; 
-
-// SHA1 fingerprint of the certificate
-// openssl x509 -fingerprint -in  <certificate>.crt
-const char*       fingerprint = "A5 02 FF 13 99 9F 8B 39 8E F1 83 4F 11 23 65 0B 32 36 FC 07";
-#endif
-
 // PIR motion sensor support, make sure to connect a PIR motion sensor to the GPIO14
-#define           PIR
+//#define           PIR
 #ifdef PIR
 const uint8_t     PIR_SENSOR_PIN = 14;
 #endif
@@ -126,37 +112,11 @@ uint8_t           currentPirState                                   = pirState;
 
 Settings          settings;
 Ticker            ticker;
-#ifdef TLS
-WiFiClientSecure  wifiClient;
-#else
+
 WiFiClient        wifiClient;
-#endif
+
 PubSubClient      mqttClient(wifiClient);
 
-///////////////////////////////////////////////////////////////////////////
-//   Adafruit IO with SSL/TLS
-///////////////////////////////////////////////////////////////////////////
-/*
-  Function called to verify the fingerprint of the MQTT server certificate
- */
-#ifdef TLS
-void verifyFingerprint() {
-  DEBUG_PRINT(F("INFO: Connecting to "));
-  DEBUG_PRINTLN(settings.mqttServer);
-
-  if (!wifiClient.connect(settings.mqttServer, atoi(settings.mqttPort))) {
-    DEBUG_PRINTLN(F("ERROR: Connection failed. Halting execution"));
-    reset();
-  }
-
-  if (wifiClient.verify(fingerprint, settings.mqttServer)) {
-    DEBUG_PRINTLN(F("INFO: Connection secure"));
-  } else {
-    DEBUG_PRINTLN(F("ERROR: Connection insecure! Halting execution"));
-    reset();
-  }
-}
-#endif
 
 ///////////////////////////////////////////////////////////////////////////
 //   MQTT
@@ -354,13 +314,8 @@ void setup() {
   EEPROM.get(0, settings);
   EEPROM.end();
 
-#ifdef TLS
-  WiFiManagerParameter custom_text("<p>MQTT username, password and broker port</p>");
-  WiFiManagerParameter custom_mqtt_server("mqtt-server", "MQTT Broker IP", "m21.cloudmqtt.com", STRUCT_CHAR_ARRAY_SIZE, "disabled");
-#else
   WiFiManagerParameter custom_text("<p>MQTT username, password, broker IP address and broker port</p>");
   WiFiManagerParameter custom_mqtt_server("mqtt-server", "MQTT Broker IP", settings.mqttServer, STRUCT_CHAR_ARRAY_SIZE);
-#endif
   WiFiManagerParameter custom_mqtt_user("mqtt-user", "MQTT User", settings.mqttUser, STRUCT_CHAR_ARRAY_SIZE);
   WiFiManagerParameter custom_mqtt_password("mqtt-password", "MQTT Password", settings.mqttPassword, STRUCT_CHAR_ARRAY_SIZE, "type = \"password\"");
   WiFiManagerParameter custom_mqtt_port("mqtt-port", "MQTT Broker Port", settings.mqttPort, 6);
@@ -384,11 +339,7 @@ void setup() {
   }
 
   if (shouldSaveConfig) {
-#ifdef TLS
-    strcpy(settings.mqttServer,   broker);
-#else
     strcpy(settings.mqttServer,   custom_mqtt_server.getValue());
-#endif
     strcpy(settings.mqttUser,     custom_mqtt_user.getValue());
     strcpy(settings.mqttPassword, custom_mqtt_password.getValue());
     strcpy(settings.mqttPort,     custom_mqtt_port.getValue());
@@ -398,10 +349,6 @@ void setup() {
     EEPROM.end();
   }
 
-#ifdef TLS
-  // check the fingerprint of io.adafruit.com's SSL cert
-  verifyFingerprint();
-#endif
 
   // configure MQTT
   mqttClient.setServer(settings.mqttServer, atoi(settings.mqttPort));

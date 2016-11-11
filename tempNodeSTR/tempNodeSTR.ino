@@ -18,8 +18,8 @@ DallasTemperature sensors(&oneWire);
 
 //EDIT THESE LINES TO MATCH YOUR SETUP
 #define MQTT_SERVER "192.168.0.80"
-const char* ssid = "lvgeek";
-const char* password = "zaq11qaz";
+const char* ssid = "*****";
+const char* password = "*****";
 
 
 //topic to publish to for the temperature

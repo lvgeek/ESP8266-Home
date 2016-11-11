@@ -1,9 +1,12 @@
+//Based on works by:
 //ItKindaWorks - Creative Commons 2016
 //github.com/ItKindaWorks
 //
 //Requires PubSubClient found here: https://github.com/knolleary/pubsubclient
 //
 //ESP8266 MQTT temp sensor node
+//lvgeek 2016
+//connects to local MQTT server and publishes 3 temperatures
 
 
 #include <PubSubClient.h>
@@ -22,7 +25,7 @@ const char* ssid = "*****";
 const char* password = "******";
 
 
-//topic to publish to for the temperature
+//topic to publish to for the temperatures
 char* tempTopic0 = "/house/outside";
 char* tempTopic1 = "/house/garage";
 char* tempTopic2 = "/house/bathhouse";
@@ -61,18 +64,20 @@ void loop(){
   // Send the command to update temperatures
   sensors.requestTemperatures(); 
 
-  //get the new temperature
+  //get the new temperature F for sensor 0
   float currentTempFloat = sensors.getTempFByIndex(0);
 
   //convert the temp float to a string and publish to the temp topic
   char temperature[10];
   dtostrf(currentTempFloat,4,1,temperature);
   client.publish(tempTopic0, temperature);
- 
+  
+  //same for sensor index 1
   currentTempFloat = sensors.getTempFByIndex(1);
   dtostrf(currentTempFloat,4,1,temperature);
   client.publish(tempTopic1, temperature);
 
+  //same for sensor index 2
   currentTempFloat = sensors.getTempFByIndex(2);
   dtostrf(currentTempFloat,4,1,temperature);
   client.publish(tempTopic2, temperature);
@@ -82,6 +87,7 @@ void loop(){
   if (!client.connected() && WiFi.status() == 3) {reconnect();}
   //maintain MQTT connection
   client.loop();
+  //updates the MQTT temperatures every 5 seconds or so
   //MUST delay to allow ESP8266 WIFI functions to run
   delay(5000); 
 }

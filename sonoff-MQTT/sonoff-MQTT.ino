@@ -187,7 +187,7 @@ void reconnect() {
       DEBUG_PRINTLN(settings.mqttServer);
       delay(1000);
       if (i == 3) {
-        reset();
+        restart();
       }
       i++;
     }
@@ -241,7 +241,7 @@ void setRelayState() {
  */
 void restart() {
   DEBUG_PRINTLN(F("INFO: Restart..."));
-  ESP.reset();
+  ESP.restart();
   delay(1000);
 }
 
@@ -281,6 +281,7 @@ void pirStateChangedISR() {
 void setup() {
 #ifdef DEBUG
   Serial.begin(115200);
+  delay(100);
 #endif
 
   // init the I/O
@@ -334,7 +335,7 @@ void setup() {
   wifiManager.setSaveConfigCallback(saveConfigCallback);
 
   if (!wifiManager.autoConnect(MQTT_CLIENT_ID)) {
-    ESP.reset();
+    ESP.restart();
     delay(1000);
   }
 
@@ -363,6 +364,7 @@ void setup() {
   ticker.detach();
 
   setRelayState();
+  delay(1000);
 }
 
 
@@ -404,7 +406,7 @@ void loop() {
           if (buttonDurationPressed < 500) {
             relayState = relayState == HIGH ? LOW : HIGH;
             setRelayState();
-          } else if (buttonDurationPressed < 3000) {
+          } else if (buttonDurationPressed < 5000) {
             restart();
           } else {
             reset();

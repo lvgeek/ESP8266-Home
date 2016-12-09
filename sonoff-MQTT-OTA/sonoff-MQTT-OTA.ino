@@ -1,7 +1,13 @@
-/*
-  Lvgeek modified sonoff-MQTT for local MQTT and HA
+/* 
+  Lvgeek modified sonoff-MQTT for local MQTT and HA with OTA support
+  
+  Alternative firmware for Itead Sonoff switches, based on the MQTT protocol 
+  The very initial version of this firmware was a fork from the SonoffBoilerplate (tzapu)
+  
+  This firmware can be easily interfaced with Home Assistant, with the MQTT switch 
+  component: https://home-assistant.io/components/switch.mqtt/
  
-   Libraries :
+  Libraries :
     - ESP8266 core for Arduino :  https://github.com/esp8266/Arduino
     - PubSubClient:               https://github.com/knolleary/pubsubclient
     - WiFiManager:                https://github.com/tzapu/WiFiManager
@@ -10,12 +16,19 @@
     - File > Examples > ES8266WiFi > WiFiClient
     - File > Examples > PubSubClient > mqtt_auth
     - https://github.com/tzapu/SonoffBoilerplate
-
+    
   Schematic:
     - VCC (Sonoff) -> VCC (FTDI)
     - RX  (Sonoff) -> TX  (FTDI)
     - TX  (Sonoff) -> RX  (FTDI)
     - GND (Sonoff) -> GND (FTDI)
+    
+  Steps:
+    - Upload the firmware
+    - Connect to the new Wi-Fi AP and memorize its name 
+    - Choose your network and enter your MQTT username, password, broker 
+      IP address and broker port
+    - Update your configuration in Home Assistant
   
   MQTT topics and payload:
     - State:    <Chip_ID>/switch/state      ON/OFF
@@ -28,175 +41,302 @@
       state_topic: 'CBFxxx/switch/state'
       command_topic: 'CBFxxx/switch/switch'
       optimistic: false
-  
-   Credtits: Modified from the following projects
-   Thanks for the inspiration!
-   
-   https://github.com/mertenats/sonoff
-   https://github.com/SuperHouse/BasicOTARelay
-   
+      
+  Modified version of Samuel M. - v1.2 - 11.2016
+  If you like this example, please add a star! Thank you!
+  https://github.com/mertenats/sonoff
   
   Lvgeek 2016
-  https://github.com/lvgeek/ESP8266-Home/sonoff-MQTT-OTA
- 
- 
- 
- 
- */
+  https://github.com/lvgeek/ESP8266-Home/tree/master/sonoff-MQTT-OTA
+*/
 
-#include <ESP8266WiFi.h>
-#include <ESP8266mDNS.h>
-//#include <WiFiUdp.h>
+#include <ESP8266WiFi.h>    // https://github.com/esp8266/Arduino
+#include <PubSubClient.h>   // https://github.com/knolleary/pubsubclient/releases/tag/v2.6
 #include <ArduinoOTA.h>
-#include <PubSubClient.h>
 
-/* WiFi Settings */
+// WiFi Settings
 const char* ssid     = "xxxxxxxx";
 const char* password = "xxxxxxxx";
+const char* MQTT_SERVER = "192.168.0.80";
 
-/* Sonoff Outputs */
-const int relayPin = 12;  // Active high
-const int ledPin   = 13;  // Active low
 
-/* MQTT Settings */
-const char* mqttTopic = "/test/sonoff";   // MQTT topic
-IPAddress broker(192,168,1,111);          // Address of the MQTT broker
-#define CLIENT_ID "client-1c6adc"         // Client ID to send to the broker
+#define           STRUCT_CHAR_ARRAY_SIZE 24   // size of the arrays for MQTT username, password, etc.
+#define           DEBUG                       // enable debugging
 
-/**
- * MQTT callback to process messages
- */
-void callback(char* topic, byte* payload, unsigned int length) {
-  Serial.print("Message arrived [");
-  Serial.print(topic);
-  Serial.print("] ");
-  for (int i=0;i<length;i++) {
-    Serial.print((char)payload[i]);
-  }
-  Serial.println();
+// macros for debugging
+#ifdef DEBUG
+  #define         DEBUG_PRINT(x)    Serial.print(x)
+  #define         DEBUG_PRINTLN(x)  Serial.println(x)
+#else
+  #define         DEBUG_PRINT(x)
+  #define         DEBUG_PRINTLN(x)
+#endif
 
-  // Examine only the first character of the message
-  if(payload[0] == 49)              // Message "1" in ASCII (turn outputs ON)
-  {
-    digitalWrite(ledPin, LOW);      // LED is active-low, so this turns it on
-    digitalWrite(relayPin, HIGH);
-  } else if(payload[0] == 48)       // Message "0" in ASCII (turn outputs OFF)
-  {
-    digitalWrite(ledPin, HIGH);     // LED is active-low, so this turns it off
-    digitalWrite(relayPin, LOW);
-  } else {
-    Serial.println("Unknown value");
-  }
-  
-}
+// Sonoff properties
+const uint8_t     BUTTON_PIN = 0;
+const uint8_t     RELAY_PIN  = 12;
+const uint8_t     LED_PIN    = 13;
 
-WiFiClient wificlient;
-PubSubClient client(wificlient);
+// MQTT
+char              MQTT_CLIENT_ID[7]                                 = {0};
+char              MQTT_SWITCH_STATE_TOPIC[STRUCT_CHAR_ARRAY_SIZE]   = {0};
+char              MQTT_SWITCH_COMMAND_TOPIC[STRUCT_CHAR_ARRAY_SIZE] = {0};
+const char*       MQTT_SWITCH_ON_PAYLOAD                            = "ON";
+const char*       MQTT_SWITCH_OFF_PAYLOAD                           = "OFF";
 
-/**
- * Attempt connection to MQTT broker and subscribe to command topic
- */
-void reconnect() {
-  // Loop until we're reconnected
-  while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
-    // Attempt to connect
-    if (client.connect(CLIENT_ID)) {
-      Serial.println("connected");
-      client.subscribe(mqttTopic);
-    } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
-      // Wait 5 seconds before retrying
-      delay(5000);
+enum CMD {
+  CMD_NOT_DEFINED,
+  CMD_PIR_STATE_CHANGED,
+  CMD_BUTTON_STATE_CHANGED,
+};
+
+volatile uint8_t cmd = CMD_NOT_DEFINED;
+
+uint8_t           relayState                                        = HIGH;  // HIGH: closed switch
+uint8_t           buttonState                                       = HIGH; // HIGH: opened switch
+uint8_t           currentButtonState                                = buttonState;
+long              buttonStartPressed                                = 0;
+long              buttonDurationPressed                             = 0;
+
+WiFiClient        wifiClient;
+
+PubSubClient      mqttClient(wifiClient);
+
+
+///////////////////////////////////////////////////////////////////////////
+//   MQTT
+///////////////////////////////////////////////////////////////////////////
+/*
+   Function called when a MQTT message arrived
+   @param p_topic   The topic of the MQTT message
+   @param p_payload The payload of the MQTT message
+   @param p_length  The length of the payload
+*/
+void callback(char* p_topic, byte* p_payload, unsigned int p_length) {
+  // handle the MQTT topic of the received message
+  if (String(MQTT_SWITCH_COMMAND_TOPIC).equals(p_topic)) {
+    if ((char)p_payload[0] == (char)MQTT_SWITCH_ON_PAYLOAD[0] && (char)p_payload[1] == (char)MQTT_SWITCH_ON_PAYLOAD[1]) {
+      if (relayState != HIGH) {
+        relayState = HIGH;
+        setRelayState();
+      }
+    } else if ((char)p_payload[0] == (char)MQTT_SWITCH_OFF_PAYLOAD[0] && (char)p_payload[1] == (char)MQTT_SWITCH_OFF_PAYLOAD[1] && (char)p_payload[2] == (char)MQTT_SWITCH_OFF_PAYLOAD[2]) {
+      if (relayState != LOW) {
+        relayState = LOW;
+        setRelayState();
+      }
     }
   }
 }
 
-/**
- * Setup
+/*
+  Function called to publish the state of the Sonoff relay
+*/
+void publishSwitchState() {
+  if (relayState == HIGH) {
+    if (mqttClient.publish(MQTT_SWITCH_STATE_TOPIC, MQTT_SWITCH_ON_PAYLOAD, true)) {
+      DEBUG_PRINT(F("INFO: MQTT message publish succeeded. Topic: "));
+      DEBUG_PRINT(MQTT_SWITCH_STATE_TOPIC);
+      DEBUG_PRINT(F(". Payload: "));
+      DEBUG_PRINTLN(MQTT_SWITCH_ON_PAYLOAD);
+    } else {
+      DEBUG_PRINTLN(F("ERROR: MQTT message publish failed, either connection lost, or message too large"));
+    }
+  } else {
+    if (mqttClient.publish(MQTT_SWITCH_STATE_TOPIC, MQTT_SWITCH_OFF_PAYLOAD, true)) {
+      DEBUG_PRINT(F("INFO: MQTT message publish succeeded. Topic: "));
+      DEBUG_PRINT(MQTT_SWITCH_STATE_TOPIC);
+      DEBUG_PRINT(F(". Payload: "));
+      DEBUG_PRINTLN(MQTT_SWITCH_OFF_PAYLOAD);
+    } else {
+      DEBUG_PRINTLN(F("ERROR: MQTT message publish failed, either connection lost, or message too large"));
+    }
+  }
+}
+
+/*
+  Function called to connect/reconnect to the MQTT broker
  */
+void reconnect() {
+  uint8_t i = 0;
+  while (!mqttClient.connected()) {
+    if (mqttClient.connect(MQTT_CLIENT_ID)) {
+      DEBUG_PRINTLN(F("INFO: The client is successfully connected to the MQTT broker"));
+    } else {
+      DEBUG_PRINTLN(F("ERROR: The connection to the MQTT broker failed"));
+      delay(1000);
+      if (i == 3) {
+        restart();
+      }
+      i++;
+    }
+  }
+
+  if (mqttClient.subscribe(MQTT_SWITCH_COMMAND_TOPIC)) {
+    DEBUG_PRINT(F("INFO: Sending the MQTT subscribe succeeded. Topic: "));
+    DEBUG_PRINTLN(MQTT_SWITCH_COMMAND_TOPIC);
+  } else {
+    DEBUG_PRINT(F("ERROR: Sending the MQTT subscribe failed. Topic: "));
+    DEBUG_PRINTLN(MQTT_SWITCH_COMMAND_TOPIC);
+  }
+}
+
+
+
+
+/*
+  Function called to toggle the state of the LED
+ */
+void tick() {
+  digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+}
+
+
+
+///////////////////////////////////////////////////////////////////////////
+//   Sonoff switch
+///////////////////////////////////////////////////////////////////////////
+/*
+ Function called to set the state of the relay
+ */
+void setRelayState() {
+  digitalWrite(RELAY_PIN, relayState);
+  digitalWrite(LED_PIN, (relayState + 1) % 2);
+  publishSwitchState();
+}
+
+/*
+  Function called to restart the switch
+ */
+void restart() {
+  DEBUG_PRINTLN(F("INFO: Restart..."));
+  ESP.restart();
+  delay(1000);
+}
+
+
+///////////////////////////////////////////////////////////////////////////
+//   ISR
+///////////////////////////////////////////////////////////////////////////
+/*
+  Function called when the button is pressed/released
+ */
+void buttonStateChangedISR() {
+  cmd = CMD_BUTTON_STATE_CHANGED;
+}
+
+///////////////////////////////////////////////////////////////////////////
+//   Setup() and loop()
+///////////////////////////////////////////////////////////////////////////
 void setup() {
-  Serial.begin(115200);
-  Serial.println("Booting");
+
+  // init the I/O
+  pinMode(LED_PIN,    OUTPUT);
+  pinMode(RELAY_PIN,  OUTPUT);
+  pinMode(BUTTON_PIN, INPUT);
+  attachInterrupt(BUTTON_PIN, buttonStateChangedISR, CHANGE);
+
+ 
+  // get the Chip ID of the switch and use it as the MQTT client ID
+  sprintf(MQTT_CLIENT_ID, "%06X", ESP.getChipId());
+  DEBUG_PRINT(F("INFO: MQTT client ID/Hostname: "));
+  DEBUG_PRINTLN(MQTT_CLIENT_ID);
+
+  // set the state topic: <Chip ID>/switch/state
+  sprintf(MQTT_SWITCH_STATE_TOPIC, "%06X/switch/state", ESP.getChipId());
+  DEBUG_PRINT(F("INFO: MQTT state topic: "));
+  DEBUG_PRINTLN(MQTT_SWITCH_STATE_TOPIC);
+
+  // set the command topic: <Chip ID>/switch/switch
+  sprintf(MQTT_SWITCH_COMMAND_TOPIC, "%06X/switch/switch", ESP.getChipId());
+  DEBUG_PRINT(F("INFO: MQTT command topic: "));
+  DEBUG_PRINTLN(MQTT_SWITCH_COMMAND_TOPIC);
+
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
-  Serial.println("WiFi begun");
+
   while (WiFi.waitForConnectResult() != WL_CONNECTED) {
-    Serial.println("Connection Failed! Rebooting...");
-    delay(5000);
+    delay(1000);
     ESP.restart();
   }
-  Serial.println("Proceeding");
 
-  // Port defaults to 8266
-  // ArduinoOTA.setPort(8266);
-
-  // Hostname defaults to esp8266-[ChipID]
-  // ArduinoOTA.setHostname("myesp8266");
-
-  // No authentication by default
-  // ArduinoOTA.setPassword((const char *)"123");
-  
   ArduinoOTA.onStart([]() {
-    Serial.println("Start");
+    DEBUG_PRINTLN("Start");
   });
   ArduinoOTA.onEnd([]() {
-    Serial.println("\nEnd");
+    DEBUG_PRINTLN("\nEnd");
   });
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+    DEBUG_PRINT(F("Progress: %u%%\r", (progress / (total / 100))));
+  
   });
   ArduinoOTA.onError([](ota_error_t error) {
     Serial.printf("Error[%u]: ", error);
-    if      (error == OTA_AUTH_ERROR   ) Serial.println("Auth Failed");
-    else if (error == OTA_BEGIN_ERROR  ) Serial.println("Begin Failed");
-    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-    else if (error == OTA_END_ERROR    ) Serial.println("End Failed");
+    if      (error == OTA_AUTH_ERROR   ) DEBUG_PRINTLN("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR  ) DEBUG_PRINTLN("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) DEBUG_PRINTLN("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) DEBUG_PRINTLN("Receive Failed");
+    else if (error == OTA_END_ERROR    ) DEBUG_PRINTLN("End Failed");
   });
   ArduinoOTA.begin();
-  Serial.println("Ready");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
-  
-  /* Set up the outputs. LED is active-low */
-  pinMode(ledPin, OUTPUT);
-  pinMode(relayPin, OUTPUT);
-  digitalWrite(ledPin, HIGH);
-  digitalWrite(relayPin, LOW);
+  DEBUG_PRINTLN("Ready");
+  DEBUG_PRINT("IP address: ");
+  DEBUG_PRINTLN(WiFi.localIP());  
 
-  /* Prepare MQTT client */
-  client.setServer(broker, 1883);
-  client.setCallback(callback);
+ 
+
+
+  // configure MQTT
+  mqttClient.setServer(MQTT_SERVER, 1883);
+  mqttClient.setCallback(callback);
+
+  // connect to the MQTT broker
+  reconnect();
+  
+  
+  setRelayState();
+  delay(1000);
 }
 
-/**
- * Main
- */
+
 void loop() {
-  ArduinoOTA.handle();
-  if (WiFi.status() != WL_CONNECTED)
-  {
-    Serial.print("Connecting to ");
-    Serial.print(ssid);
-    Serial.println("...");
-    WiFi.begin(ssid, password);
+  //ArduinoOTA.handle();
 
-    if (WiFi.waitForConnectResult() != WL_CONNECTED)
-      return;
-    Serial.println("WiFi connected");
+  //yield();
+
+  switch (cmd) {
+    case CMD_NOT_DEFINED:
+      // do nothing
+      break;
+   case CMD_BUTTON_STATE_CHANGED:
+      currentButtonState = digitalRead(BUTTON_PIN);
+      if (buttonState != currentButtonState) {
+        // tests if the button is released or pressed
+        if (buttonState == LOW && currentButtonState == HIGH) {
+          buttonDurationPressed = millis() - buttonStartPressed;
+          if (buttonDurationPressed < 500) {
+            relayState = relayState == HIGH ? LOW : HIGH;
+            setRelayState();
+          } else if (buttonDurationPressed < 5000) {
+            restart();
+          } 
+        } else if (buttonState == HIGH && currentButtonState == LOW) {
+          buttonStartPressed = millis();
+        }
+        buttonState = currentButtonState;
+      }
+      cmd = CMD_NOT_DEFINED;
+      break;
   }
 
-  if (WiFi.status() == WL_CONNECTED) {
-    if (!client.connected()) {
-      reconnect();
-    }
-  }
+  yield();
   
-  if (client.connected())
-  {
-    client.loop();
+  // keep the MQTT client connected to the broker
+  if (!mqttClient.connected()) {
+    reconnect();
   }
+  mqttClient.loop();
+
+  yield();
 }
+

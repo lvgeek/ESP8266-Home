@@ -43,7 +43,8 @@ void setup() {
   delay(100);
 
 
-  //start wifi subsystem
+  //start wifi subsystem; Explicitly set the ESP8266 to be a WiFi-client
+  WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
 
   //attempt to connect to the WIFI network and then connect to the MQTT server

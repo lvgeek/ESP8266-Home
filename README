@@ -1,7 +1,12 @@
 Collection of ESP8266 Home Automation Sketches
 
 This is my first attmept at home automation with ESP8266 devices
-Integrated with Home Assistant and HAP-NodeJS for HomeKit
+Integrated with Home Assistant and homebridge-homeassistant for HomeKit
+Amazon Echo and Apple HomeKit work seamlessly
+
+See:
+https://home-assistant.io/
+https://github.com/home-assistant/homebridge-homeassistant
 
 Plan to add Itead Sonoff devices for lights/plugs
 Plan to add RGB Led for custom lights
